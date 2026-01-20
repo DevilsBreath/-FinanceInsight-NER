@@ -1,28 +1,33 @@
+"""
+Lightweight NER fine-tuning script using spaCy.
+
+Purpose:
+- Auto-annotate financial text using simple heuristics
+- Fine-tune spaCy NER component
+- Persist trained model to disk
+"""
+
 import random
-import spacy
-from spacy.training import Example
-import pandas as pd
 import re
 from pathlib import Path
 
-# ---------------------------
-# 1. LOAD BASE MODEL
-# ---------------------------
-nlp = spacy.load("en_core_web_sm")
+import pandas as pd
+import spacy
+from spacy.training import Example
 
 # ---------------------------
-# 2. LOAD DATA
+# CONFIG
 # ---------------------------
-df = pd.read_csv("data/raw/financial_news.csv")  # change name if needed
-texts = df.iloc[:, 0].dropna().astype(str).tolist()
+SPACY_BASE_MODEL = "en_core_web_sm"
+TRAIN_DATA_PATH = "data/raw/financial_news.csv"
+OUTPUT_MODEL_DIR = "trained_model"
+MAX_SAMPLES = 300
+EPOCHS = 5
 
-# Take small subset (fast training)
-texts = texts[:300]
-
 # ---------------------------
-# 3. AUTO LABEL FUNCTION
+# AUTO LABEL FUNCTION
 # ---------------------------
-def auto_annotate(text):
+def auto_annotate(text: str):
     entities = []
 
     # MONEY patterns
@@ -34,31 +39,40 @@ def auto_annotate(text):
         for m in re.finditer(org, text):
             entities.append((m.start(), m.end(), "ORG"))
 
-    return (text, {"entities": entities})
-
-train_data = [auto_annotate(t) for t in texts if len(auto_annotate(t)[1]["entities"]) > 0]
-
-print("Training samples:", len(train_data))
+    return text, {"entities": entities}
 
 # ---------------------------
-# 4. TRAIN NER
+# MAIN TRAINING PIPELINE
 # ---------------------------
-ner = nlp.get_pipe("ner")
+def main():
+    nlp = spacy.load(SPACY_BASE_MODEL)
 
-optimizer = nlp.resume_training()
+    df = pd.read_csv(TRAIN_DATA_PATH)
+    texts = df.iloc[:, 0].dropna().astype(str).tolist()[:MAX_SAMPLES]
 
-for epoch in range(5):
-    random.shuffle(train_data)
-    losses = {}
-    for text, annotations in train_data:
-        doc = nlp.make_doc(text)
-        example = Example.from_dict(doc, annotations)
-        nlp.update([example], sgd=optimizer, losses=losses)
-    print(f"Epoch {epoch+1}, Losses: {losses}")
+    train_data = [
+        auto_annotate(t)
+        for t in texts
+        if auto_annotate(t)[1]["entities"]
+    ]
 
-# ---------------------------
-# 5. SAVE MODEL
-# ---------------------------
-output_dir = Path("trained_model")
-nlp.to_disk(output_dir)
-print("Model saved to 'trained_model'")
+    print("Training samples:", len(train_data))
+
+    ner = nlp.get_pipe("ner")
+    optimizer = nlp.resume_training()
+
+    for epoch in range(EPOCHS):
+        random.shuffle(train_data)
+        losses = {}
+        for text, annotations in train_data:
+            doc = nlp.make_doc(text)
+            example = Example.from_dict(doc, annotations)
+            nlp.update([example], sgd=optimizer, losses=losses)
+        print(f"Epoch {epoch + 1}, Losses: {losses}")
+
+    Path(OUTPUT_MODEL_DIR).mkdir(exist_ok=True)
+    nlp.to_disk(OUTPUT_MODEL_DIR)
+    print(f"Model saved to '{OUTPUT_MODEL_DIR}'")
+
+if __name__ == "__main__":
+    main()
